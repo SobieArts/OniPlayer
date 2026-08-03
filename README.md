@@ -10,8 +10,8 @@ You have Course or Anime folders With many Episodes.
 You don’t remember which one you watched last.  
 **OniPlayer** Uses Windows Accses time And Playes The last Video/Anime Episode you Watched or Next one.
 
-- Press **Enter** → it plays the last video you watched.  
-- Press **→** (right arrow) → it switches to “Play Next”. Then Enter plays the next video instead.
+- Press **Enter** → it plays the last video you watched or Next one (you can change this in Play Mode Options).  
+- Press **→** (right arrow) → it switches to “Play Next/Play current”. Then Enter plays the next video instead.
 
 That’s the whole idea. No setup, no config, no remembering.
 
