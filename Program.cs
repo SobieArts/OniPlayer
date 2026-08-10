@@ -1,9 +1,10 @@
-//-------------Updated to V1.3 with new features--------------
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Diagnostics;
+using System.Text.RegularExpressions;
+using Microsoft.WindowsAPICodePack.Dialogs;
 
 namespace OniPlayer
 {
@@ -19,12 +20,20 @@ namespace OniPlayer
         Next
     }
 
+    enum AlgorithmMode
+    {
+        Alphabetical,   // system 1
+        SeasonEpisode,  // system 2
+        NaturalSort     // system 3
+    }
+
     class Program
     {
         private static List<Location> locations = new List<Location>();
         private static readonly string configFile = "locations.cfg";
         private static readonly string settingsFile = "oniplayer.cfg";
         private static PlayMode currentMode = PlayMode.Current;
+        private static AlgorithmMode currentAlgorithm = AlgorithmMode.Alphabetical;
         private static readonly string[] videoExtensions = { ".mp4", ".avi", ".mkv", ".mov", ".wmv", ".flv", ".m4v", ".mpg", ".mpeg", ".3gp", ".webm" };
 
         private static int drawCallCounter = 0;
@@ -37,12 +46,14 @@ namespace OniPlayer
             "2. Remove Location",
             "3. Details Location",
             "4. Reset All",
-            "5. Play Mode"
+            "5. Play Mode",
+            "6. Algorithm Mode"
         };
 
         private static int selectedIndex = 0;
-        private static bool focusOnAction = false;
+        private static int actionFocus = -1; // -1 = no action, 0 = toggle, 1 = prev
 
+        [STAThread]
         static void Main(string[] args)
         {
             Console.Title = "Oni Player - Smart Video Resume";
@@ -60,35 +71,48 @@ namespace OniPlayer
                 if (key.Key == ConsoleKey.UpArrow && totalItems > 0)
                 {
                     selectedIndex = (selectedIndex - 1 + totalItems) % totalItems;
-                    focusOnAction = false;
+                    actionFocus = -1;
                 }
                 else if (key.Key == ConsoleKey.DownArrow && totalItems > 0)
                 {
                     selectedIndex = (selectedIndex + 1) % totalItems;
-                    focusOnAction = false;
+                    actionFocus = -1;
                 }
                 else if (key.Key == ConsoleKey.LeftArrow && totalItems > 0)
                 {
-                    if (selectedIndex < locations.Count && focusOnAction)
-                        focusOnAction = false;
+                    if (selectedIndex < locations.Count)
+                    {
+                        if (actionFocus == -1) actionFocus = 1;
+                        else if (actionFocus == 0) actionFocus = -1;
+                        else if (actionFocus == 1) actionFocus = 0;
+                    }
                 }
                 else if (key.Key == ConsoleKey.RightArrow && totalItems > 0)
                 {
-                    if (selectedIndex < locations.Count && !focusOnAction)
-                        focusOnAction = true;
+                    if (selectedIndex < locations.Count)
+                    {
+                        if (actionFocus == -1) actionFocus = 0;
+                        else if (actionFocus == 0) actionFocus = 1;
+                        else if (actionFocus == 1) actionFocus = -1;
+                    }
                 }
                 else if (key.Key == ConsoleKey.Enter && totalItems > 0)
                 {
                     if (selectedIndex < locations.Count)
                     {
-                        if (focusOnAction)
+                        var loc = locations[selectedIndex];
+                        if (actionFocus == -1)
+                        {
+                            PlayVideoBasedOnMode(loc);
+                        }
+                        else if (actionFocus == 0)
                         {
                             PlayMode opposite = currentMode == PlayMode.Next ? PlayMode.Current : PlayMode.Next;
                             if (opposite == PlayMode.Current)
-                                PlayLastVideo(locations[selectedIndex]);
+                                PlayLastVideo(loc);
                             else
                             {
-                                string nextPath = GetNextVideoPath(locations[selectedIndex].Path);
+                                string nextPath = GetNextVideoPath(loc.Path);
                                 if (nextPath == null)
                                 {
                                     Console.ForegroundColor = ConsoleColor.Red;
@@ -110,11 +134,31 @@ namespace OniPlayer
                                 }
                             }
                         }
-                        else
+                        else if (actionFocus == 1)
                         {
-                            PlayVideoBasedOnMode(locations[selectedIndex]);
+                            string prevPath = GetPreviousVideoPath(loc.Path);
+                            if (prevPath == null)
+                            {
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("\nPrevious video not found (maybe last video is the first one).");
+                                Console.ResetColor();
+                            }
+                            else
+                            {
+                                Console.ForegroundColor = ConsoleColor.Green;
+                                Console.WriteLine($"\nPlaying previous video before last accessed: {Path.GetFileName(prevPath)}");
+                                Console.ResetColor();
+                                try { Process.Start(prevPath); }
+                                catch (Exception ex)
+                                {
+                                    Console.ForegroundColor = ConsoleColor.Red;
+                                    Console.WriteLine($"Error opening player: {ex.Message}");
+                                    Console.ResetColor();
+                                }
+                            }
                         }
-                        focusOnAction = false;
+
+                        actionFocus = -1;
                         Console.WriteLine("\nPress any key to continue...");
                         Console.ReadKey(true);
                     }
@@ -129,6 +173,7 @@ namespace OniPlayer
                 else if (key.KeyChar == '3') ExecuteMenuAction(2);
                 else if (key.KeyChar == '4') ExecuteMenuAction(3);
                 else if (key.KeyChar == '5') ExecuteMenuAction(4);
+                else if (key.KeyChar == '6') ExecuteMenuAction(5);
                 else if (key.Key == ConsoleKey.Escape) running = false;
             }
         }
@@ -142,6 +187,7 @@ namespace OniPlayer
                 case 2: ShowDetailsWrapper(); break;
                 case 3: ResetAll(); LoadLocations(); ClampSelectedIndex(); break;
                 case 4: TogglePlayMode(); break;
+                case 5: ToggleAlgorithm(); break;
             }
         }
 
@@ -157,41 +203,127 @@ namespace OniPlayer
         private static void LoadSettings()
         {
             if (!File.Exists(settingsFile)) return;
-            string content = File.ReadAllText(settingsFile).Trim();
-            currentMode = (content == "Next") ? PlayMode.Next : PlayMode.Current;
+            string[] lines = File.ReadAllLines(settingsFile);
+            if (lines.Length > 0)
+            {
+                string modeLine = lines[0].Trim();
+                currentMode = (modeLine == "Next") ? PlayMode.Next : PlayMode.Current;
+            }
+            if (lines.Length > 1)
+            {
+                string algoLine = lines[1].Trim();
+                if (algoLine == "SeasonEpisode") currentAlgorithm = AlgorithmMode.SeasonEpisode;
+                else if (algoLine == "NaturalSort") currentAlgorithm = AlgorithmMode.NaturalSort;
+                else currentAlgorithm = AlgorithmMode.Alphabetical;
+            }
         }
 
         private static void SaveSettings()
         {
-            File.WriteAllText(settingsFile, currentMode == PlayMode.Next ? "Next" : "Current");
+            string algoStr = currentAlgorithm == AlgorithmMode.SeasonEpisode ? "SeasonEpisode" :
+                             currentAlgorithm == AlgorithmMode.NaturalSort ? "NaturalSort" : "Alphabetical";
+            File.WriteAllLines(settingsFile, new[]
+            {
+                currentMode == PlayMode.Next ? "Next" : "Current",
+                algoStr
+            });
         }
 
-        private static void TogglePlayMode()
+        // ==================== Algorithm mode selection ====================
+        private static void ToggleAlgorithm()
         {
-            int selected = 0; // 0 = Current, 1 = Next
+            int selected = 0;
             bool done = false;
 
             while (!done)
             {
                 Console.Clear();
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine("--- Algorithm Mode (Next/Previous detection) ---\n");
+                Console.ResetColor();
 
-                // Header
+                string[] options = {
+                    "1. Alphabetical (default) – sort by file name",
+                    "2. Season/Episode – intelligent S01E02 detection",
+                    "3. Natural Sort – smart numeric ordering (e.g. ep2 < ep10)"
+                };
+
+                for (int i = 0; i < options.Length; i++)
+                {
+                    if (i == selected)
+                    {
+                        Console.BackgroundColor = ConsoleColor.DarkCyan;
+                        Console.ForegroundColor = ConsoleColor.White;
+                    }
+                    else
+                    {
+                        Console.ForegroundColor = ConsoleColor.White;
+                        Console.BackgroundColor = ConsoleColor.Black;
+                    }
+                    Console.WriteLine(options[i]);
+                    Console.ResetColor();
+                }
+
+                Console.ForegroundColor = ConsoleColor.DarkGray;
+                Console.WriteLine("  Esc. Cancel");
+                Console.ResetColor();
+
+                Console.Write("\nChoose (↑/↓, Enter to confirm, Esc to cancel): ");
+                var key = Console.ReadKey(true);
+
+                if (key.Key == ConsoleKey.UpArrow)
+                    selected = (selected - 1 + options.Length) % options.Length;
+                else if (key.Key == ConsoleKey.DownArrow)
+                    selected = (selected + 1) % options.Length;
+                else if (key.Key == ConsoleKey.Enter)
+                {
+                    done = true;
+                    switch (selected)
+                    {
+                        case 0: currentAlgorithm = AlgorithmMode.Alphabetical; break;
+                        case 1: currentAlgorithm = AlgorithmMode.SeasonEpisode; break;
+                        case 2: currentAlgorithm = AlgorithmMode.NaturalSort; break;
+                    }
+                    SaveSettings();
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.WriteLine($"\n Algorithm set to: {options[selected].Substring(3)}");
+                    Console.ResetColor();
+                }
+                else if (key.Key == ConsoleKey.Escape)
+                {
+                    done = true;
+                    Console.ForegroundColor = ConsoleColor.DarkGray;
+                    Console.WriteLine("\nNo changes made.");
+                    Console.ResetColor();
+                }
+            }
+
+            Console.WriteLine("\nPress any key to return...");
+            Console.ReadKey(true);
+        }
+
+        // ==================== Play mode toggle ====================
+        private static void TogglePlayMode()
+        {
+            int selected = 0;
+            bool done = false;
+
+            while (!done)
+            {
+                Console.Clear();
                 Console.ForegroundColor = ConsoleColor.Cyan;
                 Console.WriteLine("--- Play Mode Settings ---\n");
                 Console.ResetColor();
 
-                // Option 1
                 if (selected == 0)
                 {
                     Console.BackgroundColor = ConsoleColor.DarkCyan;
                     Console.ForegroundColor = ConsoleColor.White;
                 }
-              
                 Console.Write("  1. ");
                 Console.WriteLine("Current - (play current vid)");
                 Console.ResetColor();
 
-                // Option 2
                 if (selected == 1)
                 {
                     Console.BackgroundColor = ConsoleColor.DarkCyan;
@@ -205,19 +337,15 @@ namespace OniPlayer
                 Console.WriteLine("Next - (play next vid)");
                 Console.ResetColor();
 
-                // Cancel hint
                 Console.ForegroundColor = ConsoleColor.DarkGray;
                 Console.WriteLine("  Esc. Cancel");
                 Console.ResetColor();
 
-                // Prompt
                 Console.Write("\nChoose (↑/↓ to select, Enter to confirm, Esc to cancel): ");
                 var key = Console.ReadKey(true);
 
                 if (key.Key == ConsoleKey.UpArrow || key.Key == ConsoleKey.DownArrow)
-                {
-                    selected = (selected + 1) % 2; // only two options, toggle
-                }
+                    selected = (selected + 1) % 2;
                 else if (key.Key == ConsoleKey.Enter)
                 {
                     done = true;
@@ -268,6 +396,7 @@ namespace OniPlayer
             Console.WriteLine("\nPress any key to return...");
             Console.ReadKey(true);
         }
+
         // ==================== Location Management ====================
         private static void LoadLocations()
         {
@@ -364,22 +493,133 @@ namespace OniPlayer
 
         private static string GetNextVideoPath(string folderPath)
         {
+            return GetRelativeVideoPath(folderPath, +1);
+        }
+
+        private static string GetPreviousVideoPath(string folderPath)
+        {
+            return GetRelativeVideoPath(folderPath, -1);
+        }
+
+        private static string GetRelativeVideoPath(string folderPath, int offset)
+        {
             if (!Directory.Exists(folderPath)) return null;
 
-            var allVideos = Directory.GetFiles(folderPath, "*.*", SearchOption.AllDirectories)
-                .Where(f => videoExtensions.Contains(Path.GetExtension(f).ToLower()))
-                .Select(f => new FileInfo(f))
-                .OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase).ToList();
+            var sortedVideos = GetSortedVideos(folderPath);
+            if (sortedVideos.Count == 0) return null;
 
-            if (allVideos.Count == 0) return null;
-
-            var lastAccessed = allVideos.OrderByDescending(f => f.LastAccessTime).FirstOrDefault();
+            var lastAccessed = sortedVideos.OrderByDescending(f => f.LastAccessTime).FirstOrDefault();
             if (lastAccessed == null) return null;
 
-            int idx = allVideos.FindIndex(f => f.FullName == lastAccessed.FullName);
-            if (idx == -1 || idx + 1 >= allVideos.Count) return null;
+            int idx = -1;
+            for (int i = 0; i < sortedVideos.Count; i++)
+            {
+                if (sortedVideos[i].FullName == lastAccessed.FullName)
+                {
+                    idx = i;
+                    break;
+                }
+            }
 
-            return allVideos[idx + 1].FullName;
+            if (idx == -1) return null;
+
+            int newIdx = idx + offset;
+            if (newIdx < 0 || newIdx >= sortedVideos.Count) return null;
+
+            return sortedVideos[newIdx].FullName;
+        }
+
+        private static List<FileInfo> GetSortedVideos(string folderPath)
+        {
+            var files = Directory.GetFiles(folderPath, "*.*", SearchOption.AllDirectories)
+                .Where(f => videoExtensions.Contains(Path.GetExtension(f).ToLower()))
+                .Select(f => new FileInfo(f))
+                .ToList();
+
+            switch (currentAlgorithm)
+            {
+                case AlgorithmMode.Alphabetical:
+                    return files.OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase).ToList();
+                case AlgorithmMode.SeasonEpisode:
+                    return files.OrderBy(f => f, new SeasonEpisodeComparer()).ToList();
+                case AlgorithmMode.NaturalSort:
+                    return files.OrderBy(f => f.Name, new NaturalStringComparer()).ToList();
+                default:
+                    return files.OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase).ToList();
+            }
+        }
+
+        // Season/Episode Comparer
+        private class SeasonEpisodeComparer : IComparer<FileInfo>
+        {
+            public int Compare(FileInfo x, FileInfo y)
+            {
+                (int sx, int ex) = ExtractSeasonEpisode(x.Name);
+                (int sy, int ey) = ExtractSeasonEpisode(y.Name);
+
+                if (sx >= 0 && sy >= 0)
+                {
+                    int cmp = sx.CompareTo(sy);
+                    if (cmp != 0) return cmp;
+                    cmp = ex.CompareTo(ey);
+                    if (cmp != 0) return cmp;
+                    return string.Compare(x.Name, y.Name, StringComparison.OrdinalIgnoreCase);
+                }
+                if (sx >= 0 && sy < 0) return -1;
+                if (sx < 0 && sy >= 0) return 1;
+                return string.Compare(x.Name, y.Name, StringComparison.OrdinalIgnoreCase);
+            }
+        }
+
+        private static (int season, int episode) ExtractSeasonEpisode(string filename)
+        {
+            Match m = Regex.Match(filename, @"[Ss](\d+)[^\d]*[Ee](\d+)");
+            if (m.Success)
+            {
+                int s = int.Parse(m.Groups[1].Value);
+                int e = int.Parse(m.Groups[2].Value);
+                return (s, e);
+            }
+            m = Regex.Match(filename, @"[Ee](\d+)");
+            if (m.Success)
+            {
+                int e = int.Parse(m.Groups[1].Value);
+                return (1, e);
+            }
+            return (-1, -1);
+        }
+
+        // Natural Sort Comparer
+        private class NaturalStringComparer : IComparer<string>
+        {
+            public int Compare(string x, string y)
+            {
+                if (x == null && y == null) return 0;
+                if (x == null) return -1;
+                if (y == null) return 1;
+
+                int ix = 0, iy = 0;
+                while (ix < x.Length && iy < y.Length)
+                {
+                    if (char.IsDigit(x[ix]) && char.IsDigit(y[iy]))
+                    {
+                        string nx = "", ny = "";
+                        while (ix < x.Length && char.IsDigit(x[ix])) nx += x[ix++];
+                        while (iy < y.Length && char.IsDigit(y[iy])) ny += y[iy++];
+                        int numX = int.Parse(nx);
+                        int numY = int.Parse(ny);
+                        int cmp = numX.CompareTo(numY);
+                        if (cmp != 0) return cmp;
+                    }
+                    else
+                    {
+                        int cmp = char.ToUpperInvariant(x[ix]).CompareTo(char.ToUpperInvariant(y[iy]));
+                        if (cmp != 0) return cmp;
+                        ix++; iy++;
+                    }
+                }
+                return (x.Length - ix).CompareTo(y.Length - iy);
+            }
         }
 
         // ==================== UI Helpers ====================
@@ -441,39 +681,29 @@ namespace OniPlayer
             Console.ReadKey(true);
         }
 
+        // ==================== Add Location (simplified) ====================
         private static void AddLocation()
         {
             Console.Clear();
             Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine("--- Add New Location (Press Esc to cancel) ---\n");
+            Console.WriteLine("--- Add New Location ---\n");
             Console.ResetColor();
 
-            string path = "";
-            while (true)
+            Console.Write("Enter folder path (or press ↓ for explorer, Esc to cancel): ");
+            string path = ReadPathWithExplorerOption();
+            if (path == null)
             {
-                Console.Write("Enter folder path (Esc to cancel): ");
-                string input = ReadLineWithEsc();
-                if (input == null)
-                {
-                    Console.WriteLine("\nOperation cancelled.");
-                    Console.WriteLine("\nPress any key...");
-                    Console.ReadKey(true);
-                    return;
-                }
-                path = input.Trim();
-                if (Directory.Exists(path)) break;
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("Directory does not exist. Try again.");
-                Console.ResetColor();
+                Console.WriteLine("\nOperation cancelled.");
+                Console.ReadKey(true);
+                return;
             }
 
-            Console.WriteLine();
+            Console.WriteLine(); // new line after path
             Console.Write("Enter a nickname (Enter = folder name, Esc to cancel): ");
             string nickname = ReadLineWithEsc();
             if (nickname == null)
             {
                 Console.WriteLine("\nOperation cancelled.");
-                Console.WriteLine("\nPress any key...");
                 Console.ReadKey(true);
                 return;
             }
@@ -487,6 +717,74 @@ namespace OniPlayer
             Console.ResetColor();
             Console.WriteLine("\nPress any key...");
             Console.ReadKey(true);
+        }
+
+        // New method: reads line but intercepts DownArrow to open modern folder dialog
+        private static string ReadPathWithExplorerOption()
+        {
+            string result = "";
+            while (true)
+            {
+                var key = Console.ReadKey(true);
+                if (key.Key == ConsoleKey.Escape)
+                    return null;
+                if (key.Key == ConsoleKey.DownArrow) // user wants explorer
+                {
+                    string explorerPath = PickFolderWithModernDialog();
+                    if (!string.IsNullOrEmpty(explorerPath))
+                        return explorerPath;
+                    else
+                    {
+                        // user cancelled explorer dialog, continue manual entry
+                        Console.Write("Cancelled. Enter path manually: ");
+                        // reset result and continue loop
+                        result = "";
+                        continue;
+                    }
+                }
+                if (key.Key == ConsoleKey.Enter)
+                {
+                    if (string.IsNullOrWhiteSpace(result))
+                    {
+                        Console.Write("\nPath cannot be empty. Try again: ");
+                        result = "";
+                        continue;
+                    }
+                    if (Directory.Exists(result.Trim()))
+                        return result.Trim();
+                    else
+                    {
+                        Console.Write("\nDirectory does not exist. Try again: ");
+                        result = "";
+                        continue;
+                    }
+                }
+                if (key.Key == ConsoleKey.Backspace && result.Length > 0)
+                {
+                    result = result.Substring(0, result.Length - 1);
+                    Console.Write("\b \b");
+                }
+                else if (!char.IsControl(key.KeyChar))
+                {
+                    result += key.KeyChar;
+                    Console.Write(key.KeyChar);
+                }
+            }
+        }
+
+        // Modern folder browser using Windows API Code Pack
+        private static string PickFolderWithModernDialog()
+        {
+            using (var dialog = new CommonOpenFileDialog())
+            {
+                dialog.IsFolderPicker = true;
+                dialog.Title = "Select the folder containing your videos";
+                dialog.EnsurePathExists = true;
+                if (dialog.ShowDialog() == CommonFileDialogResult.Ok)
+                    return dialog.FileName;
+                else
+                    return null;
+            }
         }
 
         private static string ReadLineWithEsc()
@@ -559,6 +857,7 @@ namespace OniPlayer
                 if (File.Exists(settingsFile)) File.Delete(settingsFile);
                 locations.Clear();
                 currentMode = PlayMode.Current;
+                currentAlgorithm = AlgorithmMode.Alphabetical;
                 Console.ForegroundColor = ConsoleColor.Green;
                 Console.WriteLine("All data has been reset.");
                 Console.ResetColor();
@@ -617,7 +916,7 @@ namespace OniPlayer
                 }
                 else if (key.Key == ConsoleKey.Escape)
                 {
-                    done = true;  // result remains -1
+                    done = true;
                 }
             }
             return result;
@@ -645,7 +944,9 @@ namespace OniPlayer
             Console.ResetColor();
 
             Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine($"  [Play Mode: {(currentMode == PlayMode.Current ? "Current Video" : "Next Video")}]");
+            string algoName = currentAlgorithm == AlgorithmMode.Alphabetical ? "Alphabetical" :
+                              currentAlgorithm == AlgorithmMode.SeasonEpisode ? "Season/Episode" : "Natural Sort";
+            Console.WriteLine($"  [Play Mode: {(currentMode == PlayMode.Current ? "Current Video" : "Next Video")}]  [Algorithm: {algoName}]");
             Console.ResetColor();
 
             if (locations.Count == 0)
@@ -665,8 +966,11 @@ namespace OniPlayer
 
                     if (i == selectedIndex && selectedIndex < locations.Count)
                     {
-                        string actionSuffix = " || Play " + (currentMode == PlayMode.Next ? "Current" : "Next");
-                        int mainMax = Console.WindowWidth - 2 - actionSuffix.Length;
+                        string toggleAction = "Play " + (currentMode == PlayMode.Next ? "Current" : "Next");
+                        string prevAction = "Play Previous";
+                        string suffix = " || " + toggleAction + " || " + prevAction;
+
+                        int mainMax = Console.WindowWidth - 2 - suffix.Length;
                         string mainDisplay = display;
                         if (mainDisplay.Length > mainMax)
                             mainDisplay = mainDisplay.Substring(0, mainMax - 3) + "...";
@@ -675,39 +979,30 @@ namespace OniPlayer
                         string locPart = (sepIdx >= 0) ? mainDisplay.Substring(0, sepIdx + 2) : mainDisplay;
                         string vidPart = (sepIdx >= 0) ? mainDisplay.Substring(sepIdx + 2) : "";
 
-                        if (!focusOnAction)
-                        {
-                            Console.BackgroundColor = ConsoleColor.DarkCyan;
-                            Console.ForegroundColor = ConsoleColor.White;
-                            Console.Write("> ");
-                            Console.Write(locPart);
-                            Console.ForegroundColor = ConsoleColor.White;
-                            Console.Write(vidPart);
-                            Console.ForegroundColor = ConsoleColor.White;
-                            Console.Write(actionSuffix);
-                            Console.ResetColor();
-                            Console.WriteLine();
-                        }
+                        Console.BackgroundColor = ConsoleColor.DarkCyan;
+                        Console.ForegroundColor = ConsoleColor.White;
+                        Console.Write("> ");
+                        Console.Write(locPart);
+                        Console.Write(vidPart);
+                        Console.Write(" || ");
+
+                        if (actionFocus == 0)
+                            Console.BackgroundColor = ConsoleColor.DarkGreen;
                         else
-                        {
                             Console.BackgroundColor = ConsoleColor.DarkCyan;
-                            Console.ForegroundColor = ConsoleColor.White;
-                            Console.Write("> ");
-                            Console.Write(locPart);
-                            Console.ForegroundColor = ConsoleColor.White;     
-                            Console.Write(vidPart);
+                        Console.Write(toggleAction);
 
-                            
-                            Console.ForegroundColor = ConsoleColor.White;
-                            Console.Write(" || ");
+                        Console.BackgroundColor = ConsoleColor.DarkCyan;
+                        Console.Write(" || ");
 
-                            
-                            Console.BackgroundColor = ConsoleColor.DarkGreen;    
-                            Console.Write("Play " + (currentMode == PlayMode.Next ? "Current" : "Next"));
+                        if (actionFocus == 1)
+                            Console.BackgroundColor = ConsoleColor.DarkGreen;
+                        else
+                            Console.BackgroundColor = ConsoleColor.DarkCyan;
+                        Console.Write(prevAction);
 
-                            Console.ResetColor();
-                            Console.WriteLine();
-                        }
+                        Console.ResetColor();
+                        Console.WriteLine();
                     }
                     else
                     {
@@ -753,7 +1048,7 @@ namespace OniPlayer
             Console.ResetColor();
 
             if (locations.Count > 0)
-                Console.WriteLine("\n↑/↓: Select   ←/→: Toggle Play action   Enter: Execute   Number keys: Direct");
+                Console.WriteLine("\n↑/↓: Select   ←/→: Focus (Opposite / Previous)   Enter: Execute   Number keys: Direct");
             else
                 Console.WriteLine("\n↑/↓: Select   Enter: Execute   Number keys: Direct");
         }
