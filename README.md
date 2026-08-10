@@ -1,7 +1,7 @@
 # OniPlayer
 ### A Player For FishHeads.
 
-I built this app because I kept forgetting which video I watched last. Maybe I have early Alzheimer's, or I'm just lazy. Engineering is about solving problems in the laziest way possible — and OniPlayer is the ultimate expression of that. One key, zero brain cells required.  
+I built this app because I kept forgetting which video I watched last. Maybe I have early Alzheimer's or somthing. Engineering is about solving problems in the laziest way possible — and OniPlayer is the ultimate expression of that. One key, zero brain cells required.  
 
 ---
 
@@ -26,7 +26,8 @@ That's it. Stop guessing.
 
 ---
 
-![screenshot1](https://github.com/user-attachments/assets/4143b610-714c-4409-92a7-a4b976f5e5d8)
+<img width="1104" height="638" alt="image" src="https://github.com/user-attachments/assets/8e0ec1d7-2a70-4300-8768-f02d264cd699" />
+
 
 ---
 
@@ -43,7 +44,8 @@ That's it. Stop guessing.
 
 ---
 
-![screenshot2](https://github.com/user-attachments/assets/f20a51c0-636a-47a2-a27e-982cc32e16e3)
+<img width="1104" height="638" alt="image" src="https://github.com/user-attachments/assets/08f6385a-b3ab-47f6-ad3c-6df5de200de4" />
+
 
 ---
 
